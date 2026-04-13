@@ -8,95 +8,113 @@ public class PacketFuzzer {
     private static final String INPUT_FILE = "input.txt";
     private static final Random random = new Random();
     private static final Set<String> uniqueCrashes = new HashSet<>(); // Contains the hash of any previously seen crash (utilizes Error type and location as signature)
-    private static int globalCounter = 0;
     public static void main(String[] args) {
-        int iterations = 1000; // Total test runs
-        System.out.println("Starting fuzzer for " + TARGET + "...");
+        int totalExecutions = 10000;
+        int currentExecs = 0;
 
-        for (int i = 1; i <= iterations; i++) {
-            // Generate: Create random input based on the PKT format
-            StringBuilder sb = new StringBuilder();
-            if (random.nextInt(10) < 3) {
-                sb.append(generateEachChoiceInput()).append("\n");
-                globalCounter++;
-            } else {
-                if (random.nextInt(5) == 0) {
-                    sb.append(generateInteractionPair()).append("\n");
-                } else {
-                    int numLines = random.nextInt(10) + 1;
-                    for (int j = 0; j < numLines; j++) {
-                        sb.append(generateEachChoiceInput()).append("\n");
-                        globalCounter++;
-                    }
+        while (currentExecs < totalExecutions) {
+            // Seed Selection. I.e. choosing a syntactically correct input
+            String seed = seedCorpus.get(random.nextInt(seedCorpus.size()));
+
+            // Calculating how many times the seed should be mutated
+            int energy = calculateEnergy(seed);
+
+            for (int e = 0; e < energy && currentExecs < totalExecutions; e++) {
+                // For each "energy" perform a mutation
+                String fuzzInput = mutate(seed);
+
+                // Writes to the input.txt
+                writeInputToFile(fuzzInput);
+                try {
+                    // Executes against target (PacketLab)
+                    executeTarget(currentExecs, fuzzInput);
+                } catch (Exception ex) { /* Log error */ }
+
+                currentExecs++;
+            }
+        }
+    }
+    private static final List<String> seedCorpus = new ArrayList<>(Arrays.asList(
+            // Valid Inputs from Brief
+            "PKT|10.0.0.1|10.0.0.2|DATA|4|ABCD",
+            "PKT|10.0.0.2|10.0.0.3|CTRL|3|XYZ",
+            "PKT|10.0.0.1|10.0.0.4|DATA|5|HELLO",
+            "COUNT|DATA",
+            "AVG|10.0.0.1",
+            "SLICE|NETWORK|1|4",
+            "MERGE|-|foo|bar",
+            "REPEAT|AB|3",
+            "LOOKUP|10.0.0.1",
+            "HEX|ff",
+            "TOP|2",
+            // Syntactically Correct but Malicious
+            "AVG|99.99.99.99", // an IP with no prior PKT record
+            "SPIN|-1", // Negative number gets smaller and never equals zero
+            "LOOKUP|1.2.3.4", // Cache for PKT is null
+            "MERGE||a|b", // StringIndexOutOfBounds
+            "WINDOW|10", // Off-by-one ArrayIndexOutOfBounds
+            "REPEAT|A|-1", // NegativeArraySize
+            "TOP|9999", // ArrayIndexOutOfBounds
+            "HI" // StringIndexOutOfBounds
+    ));
+    private static final Integer[] INT_PARTITIONS = new Integer[] {Integer.MAX_VALUE, 0, -1};
+    private static String mutate(String seed) {
+        int strategy = random.nextInt(7);
+        switch (strategy) {
+            case 0: // Char flipping
+                int idx = random.nextInt(seed.length());
+                char randomChar = (char) (random.nextInt(95) + 32);
+                return seed.substring(0, idx) + randomChar + seed.substring(idx + 1);
+            case 1: // Value Arithmetic -> Replaces any sequence of digits with one of the INT_PARTITIONS
+                return seed.replaceAll("\\d+", String.valueOf(INT_PARTITIONS[random.nextInt(INT_PARTITIONS.length)]));
+            case 2: // Line Duplication or Deletion
+                return random.nextBoolean() ? seed + "\n" + seed : "";
+            case 3: // Delimiter tampering by adding an additional delimiter or removing
+                return seed.replace("|", random.nextBoolean() ? "||" : " ");
+            case 4: // Command name mutation, tests case sensitivity of commands
+                String[] parts = seed.split("\\|");
+                if (parts.length > 0) {
+                    parts[0] = parts[0].toLowerCase(); // Test case sensitivity
+                    return String.join("|", parts);
                 }
-            }
-            String fuzzInput = sb.toString();
-            writeInputToFile(fuzzInput);
+                break;
+            case 5: // Field Deletion
+                String[] fields = seed.split("\\|");
+                if (fields.length > 1) {
+                    int removeIdx = random.nextInt(fields.length);
+                    List<String> list = new ArrayList<>(Arrays.asList(fields));
+                    list.remove(removeIdx);
+                    return String.join("|", list);
+                }
+                break;
+            case 6: // Payload Swapping/Mutation
+                String[] p = seed.split("\\|");
+                if (p.length > 1) {
+                    // Determine which field is the "payload" based on the command. E.g. PKT stores it's payload in the 5th index (6th slot)
+                    int payloadIdx = 1; // Default for most directives like REPEAT, SLICE, LOOKUP
+                    if (p[0].equals("PKT") && p.length > 5) payloadIdx = 5;
+                    else if (p[0].equals("MERGE") && p.length > 2) payloadIdx = random.nextBoolean() ? 2 : 3;
 
-            // Execute and Monitor: Run the program and check for crashes
-            try {
-                executeTarget(i, fuzzInput);
-            } catch (Exception e) {
-                System.err.println("Error during execution at iteration " + i + ": " + e.getMessage());
-            }
+                    String[] maliciousPayloads = {
+                            "",                      // Empty string
+                            "A".repeat(2000),        // Large buffer to test REPEAT's char[] buffer
+                            "!@#$%^&*()\0\n",      // Control and special characters
+                            "10.0.0.1",              // Swapping an IP into a text field
+                            "DATA"                   // Swapping a type into a text field
+                    };
+                    p[payloadIdx] = maliciousPayloads[random.nextInt(maliciousPayloads.length)]; // Replaces payload slot with a malicious input
+                    return String.join("|", p);
+                }
+                break;
+            default:
+                return seed;
         }
+        return seed;
     }
-    // Add non-numeric strings to trigger NumberFormatExceptions
-    private static final String[] INVALID_NUMBERS = {"abc", "1.2.3", " ", "!", "0xZZ"};
-
-    // Add malformed line structures
-    private static final String[] MALFORMED_LINES = {"PKT", "AVG|", "SLICE|A|B", "MERGE|||", "REPEAT|A|"};
-    private static String generateEachChoiceInput() {
-        int cmdChoice = globalCounter % 18;
-
-        // FIX: Adding 'globalCounter / 18' shifts the index so we hit every partition eventually
-        int partitionIndex = (globalCounter % INT_PARTITIONS.length + (globalCounter / 18)) % INT_PARTITIONS.length;
-        Object boundary = INT_PARTITIONS[partitionIndex];
-
-        String ip = IP_PARTITIONS[globalCounter % IP_PARTITIONS.length];
-        String str = STR_PARTITIONS[globalCounter % STR_PARTITIONS.length];
-
-        switch(cmdChoice) {
-            case 0: return String.format("PKT|%s|192.168.1.1|DATA|%d|%s", ip, boundary, str);
-            case 1: return "COUNT|" + (globalCounter % 2 == 0 ? "DATA" : "CTRL");
-            case 2: return "AVG|" + ip;
-            case 3: return "SLICE|" + str + "|" + boundary + "|" + getPartitionedInt();
-            case 4: return "MERGE|" + str + "|" + str + "|" + str;
-            case 5: return "REPEAT|" + str + "|" + boundary;
-            case 6: return "LOOKUP|" + ip;
-            case 7: return "WINDOW|" + boundary;
-            case 8: return "HEX|" + (globalCounter % 2 == 0 ? Integer.toHexString(globalCounter) : "0xZZ");
-            case 9: return "TOP|" + boundary;
-            case 10: return str;
-            case 11: return "SPIN|" + boundary;
-            case 12: return "AVG|10.0.0.99";
-            case 13: return "LOOKUP|99.99.99.99";
-            case 14: return "X";
-            case 15: return "TOP|100";
-            case 16: // Triggers NumberFormatException in numeric commands
-                return "WINDOW|" + INVALID_NUMBERS[globalCounter % INVALID_NUMBERS.length];
-            case 17: // Triggers ArrayIndexOutOfBounds by sending incomplete lines
-                return MALFORMED_LINES[globalCounter % MALFORMED_LINES.length];
-            default: return "HELP";
-        }
+    private static int calculateEnergy(String seed) {
+        // More complex (longer) seeds get more "energy" (more mutation attempts)
+        return Math.max(10, seed.length() / 2);
     }
-    // Define partitions as constant arrays
-    private static final Object[] INT_PARTITIONS = {0, -1, 1, Integer.MAX_VALUE, Integer.MIN_VALUE, 255};
-    private static final String[] IP_PARTITIONS = {"10.0.0.1", "256.256.256.256", "", "0.0.0.0", "127.0.0.1"};
-    private static final String[] STR_PARTITIONS = {"A", "", "LONG_STRING_REPEATED_".repeat(10), "!@#$%^&*()", "PKT|INVALID|FORMAT"};
-
-    private static Object getPartitionedInt() {
-        return INT_PARTITIONS[random.nextInt(INT_PARTITIONS.length)];
-    }
-    private static String generateInteractionPair() {
-        // Now uses the systematic generator instead of random
-        String p1 = generateEachChoiceInput();
-        globalCounter++;
-        String p2 = generateEachChoiceInput();
-        globalCounter++;
-        return p1 + "\n" + p2;
-    }
-
     private static void writeInputToFile(String content) {
         try (PrintWriter out = new PrintWriter(new FileWriter(INPUT_FILE))) {
             out.println(content);
@@ -153,13 +171,13 @@ public class PacketFuzzer {
         String[] lines = stackTrace.split("\n");
 
         for (String line : lines) {
-            // 1. Capture the Exception Type, but ignore the specific message after the colon
+            // Capture the Exception Type, but ignore the specific message after the colon
             if (line.contains("Exception")) {
                 // "java.lang.NegativeArraySizeException: -1" becomes "java.lang.NegativeArraySizeException"
                 type = line.split(":")[0].trim();
             }
 
-            // 2. Capture the exact line in the target program
+            // Capture the exact line in the target program
             if (line.contains("at PacketLab.")) {
                 location = line.trim();
                 break;
