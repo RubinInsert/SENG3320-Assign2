@@ -1,12 +1,15 @@
 package com.rubinin.seng3320assign2;
 
-import java.io.FileWriter;
+import java.io.BufferedWriter;
 import java.io.IOException;
-import java.io.PrintWriter;
 import java.util.HashSet;
 import java.util.Set;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.*;
 
 public class CrashAnalyzer {
+    private static final String OUTPUT_DIR = "crashes";
+
     public final Set<String> uniqueCrashes = new HashSet<>(); // Contains the hash of any previously seen crash (utilizes Error type and location as signature)
     public String getCrashSignature(String stackTrace) {
         if (stackTrace.isEmpty() || !stackTrace.contains("Exception")) return "UnknownError";
@@ -30,15 +33,37 @@ public class CrashAnalyzer {
         }
         return type + " @ " + location;
     }
-    public void saveCrash(int iteration, String input, String reason, String stackTrace) throws IOException {
-        String filename = "crash_iteration_" + iteration + ".txt";
-        try (PrintWriter out = new PrintWriter(new FileWriter(filename))) {
-            out.println("--- CRASH REPORT ---");
-            out.println("Reason: " + reason);
-            out.println("\n--- ERROR OUTPUT / STACK TRACE ---");
-            out.println(stackTrace.isEmpty() ? "No output captured." : stackTrace);
-            out.println("\n--- REPRODUCING INPUT ---");
-            out.println(input);
+
+    public void saveCrash(int iteration, String input, String reason, String stackTrace) throws IOException {    
+        // Attempt to create the crash folder
+        Path crashFolder;
+        try {
+            crashFolder = Paths.get(OUTPUT_DIR, "iteration_" + iteration);
+            Files.createDirectories(crashFolder);
+        } catch (Exception e) {
+            System.err.print("Error creating output directory: ");
+            System.err.println(e);
+            return;
         }
+
+        //Write crash report
+        Path crashReportPath = crashFolder.resolve("Crash Report.txt");
+        try (BufferedWriter out = Files.newBufferedWriter(crashReportPath)) {
+            out.write("--- CRASH REPORT ---\n");
+            out.write("Reason: " + reason);
+            out.write("\n\n--- ERROR OUTPUT / STACK TRACE ---\n");
+            out.write(stackTrace.isEmpty() ? "No output captured." : stackTrace);
+            out.write("\n--- REPRODUCING INPUT ---\n");
+            out.write(input);
+        }
+        catch (Exception e) {
+            System.err.println("Error creating crash report: ");
+            System.err.println(e);
+            return;
+        }
+
+        //Write input file
+        Path inputTextPath = crashFolder.resolve("input.txt");
+        Files.writeString(inputTextPath, input, StandardCharsets.UTF_8);
     }
 }

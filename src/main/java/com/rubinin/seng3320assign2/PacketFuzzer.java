@@ -1,10 +1,6 @@
 package com.rubinin.seng3320assign2;
-import java.io.*;
-import java.util.*;
-import java.util.concurrent.TimeUnit;
 
 public class PacketFuzzer {
-    private static final Random random = new Random();
     public static void main(String[] args) {
         int totalExecutions = 10000;
         int currentExecs = 0;
@@ -23,8 +19,6 @@ public class PacketFuzzer {
                 // For each "energy" perform a mutation
                 String fuzzInput = mutator.mutate(seed);
 
-                // Writes to the input.txt
-                packetRunner.writeInputToFile(fuzzInput);
                 try {
                     // Executes against target (PacketLab)
                     packetRunner.executeTarget(currentExecs, fuzzInput);
