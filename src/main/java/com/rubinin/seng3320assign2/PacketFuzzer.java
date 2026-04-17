@@ -2,7 +2,7 @@ package com.rubinin.seng3320assign2;
 
 public class PacketFuzzer {
     public static void main(String[] args) {
-        int totalExecutions = 10000;
+        int totalExecutions = 5000;
         int currentExecs = 0;
         SeedManager seedManager = new SeedManager();
         Mutator mutator = new Mutator();

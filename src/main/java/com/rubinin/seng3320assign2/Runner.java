@@ -27,14 +27,19 @@ public class Runner {
         boolean finished = process.waitFor(500, TimeUnit.MILLISECONDS);
 
         if (!finished) {
-            String firstCommand = inputData.split("\\|")[0].trim();
-            String timeoutSig = "TIMEOUT_" + firstCommand;
+            String threadDump = captureThreadDump(process.pid()); // Runs jcmd on target for a thread dump (for stack trace)
+            String timeoutSig = analyzer.getHangSignature(threadDump); // Gets specifically the signature to do with packet lab
+
             if (!analyzer.uniqueCrashes.contains(timeoutSig)) {
                 analyzer.uniqueCrashes.add(timeoutSig);
-                System.out.println("[NEW UNIQUE TIMEOUT] Command: " + firstCommand);
-                analyzer.saveCrash(iteration, inputData, "Timeout/Hang", "Process timed out after 500 ms.");
+                System.out.println("[NEW UNIQUE TIMEOUT] Signature: " + timeoutSig);
+
+                String details = analyzer.getHangReportSnippet(threadDump);
+                analyzer.saveCrash(iteration, inputData, "Timeout/Hang", details);
             }
+
             process.destroyForcibly();
+            process.waitFor(100, TimeUnit.MILLISECONDS);
             return;
         }
         
@@ -66,4 +71,54 @@ public class Runner {
             e.printStackTrace();
         }
     }
+
+    private String captureThreadDump(long pid) {
+        String javaHome = System.getProperty("java.home", ""); // Get directory to java tools
+        String jcmd = Paths.get(javaHome, "bin", windowsToolName("jcmd")).toString(); // Get directory to jcmd tool
+        ProcessBuilder pb = new ProcessBuilder(jcmd, String.valueOf(pid), "Thread.print"); // Command to capture thread dump of the target program
+        pb.redirectErrorStream(true); // merge stderr with stdout
+
+        try {
+            Process proc = pb.start();
+            boolean finished = proc.waitFor(2, TimeUnit.SECONDS);
+
+            StringBuilder output = new StringBuilder();
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(proc.getInputStream()))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    output.append(line).append("\n"); // Capture the output of the jcmd command
+                }
+            }
+
+            if (!finished) {
+                proc.destroyForcibly(); // Ensure we don't leave hanging jcmd processes if it takes too long
+            }
+
+            String text = output.toString();
+            if (looksLikeThreadDump(text)) { // Does the output match a basic thread dump regex
+                return text;
+            }
+            return "";
+        } catch (Exception ex) {
+            return "";
+        }
+    }
+
+    private boolean looksLikeThreadDump(String output) {
+        if (output == null || output.isBlank()) {
+            return false;
+        }
+        return output.contains("Full thread dump") // Things in the thread dump that should exist
+                || output.contains("java.lang.Thread.State")
+                || output.contains("\"main\"");
+    }
+
+    private String windowsToolName(String baseName) { // If on windows add ".exe", otherwise return as is.
+        String os = System.getProperty("os.name", "").toLowerCase();
+        if (os.contains("win")) {
+            return baseName + ".exe";
+        }
+        return baseName;
+    }
+
 }

@@ -11,6 +11,7 @@ public class CrashAnalyzer {
     private static final String OUTPUT_DIR = "crashes";
 
     public final Set<String> uniqueCrashes = new HashSet<>(); // Contains the hash of any previously seen crash (utilizes Error type and location as signature)
+
     public String getCrashSignature(String stackTrace) {
         if (stackTrace.isEmpty() || !stackTrace.contains("Exception")) return "UnknownError";
 
@@ -32,6 +33,59 @@ public class CrashAnalyzer {
             }
         }
         return type + " @ " + location;
+    }
+
+    public String getHangSignature(String threadDump) {
+        if (threadDump == null || threadDump.isBlank()) { // Generic fall back for if there isnt a thread dump
+            return "HANG|NO_THREAD_DUMP";
+        }
+
+        String[] lines = threadDump.split("\\R"); // Split thread dump by lines
+        StringBuilder packetFrames = new StringBuilder();
+        int frameCount = 0;
+
+        for (String line : lines) {
+            String trimmed = line.trim();
+
+            if (trimmed.startsWith("at PacketLab.")) { // Look for the first line to do with packetlab
+                if (packetFrames.length() > 0) {
+                    packetFrames.append(" -> ");
+                }
+                // Keep exact line numbers from the dump to show where execution hung.
+                packetFrames.append(trimmed); // Keep capturing the lines until we have 8 lines, or run out of lines.
+                frameCount++;
+
+                if (frameCount >= 8) {
+                    break;
+                }
+            }
+        }
+
+        if (frameCount == 0) { // If there are no frames, just return a generic signature again
+            return "HANG|THREAD_DUMP|NO_PACKETLAB_FRAME";
+        }
+        return "HANG|THREAD_DUMP|" + packetFrames; // Construct the hang signature
+    }
+
+    public String getHangReportSnippet(String threadDump) {
+        if (threadDump == null || threadDump.isBlank()) { // Thread dump timed out or was empty.
+            return "Process timed out after 500 ms. Thread dump unavailable.";
+        }
+
+        String[] lines = threadDump.split("\\R");
+        StringBuilder snippet = new StringBuilder();
+
+        for (String line : lines) {
+            String trimmed = line.trim();
+            if (trimmed.startsWith("at PacketLab.")) {
+                snippet.append("\t").append(trimmed).append("\n");
+            }
+        }
+
+        if (snippet.length() == 0) {
+            return "Process timed out after 500 ms. No PacketLab frames found in thread dump.";
+        }
+        return snippet.toString().trim(); // Contains the stack trace for a hang in the program
     }
 
     public void saveCrash(int iteration, String input, String reason, String stackTrace) throws IOException {    
