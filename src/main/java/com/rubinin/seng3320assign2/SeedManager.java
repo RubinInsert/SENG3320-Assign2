@@ -68,6 +68,6 @@ public class SeedManager {
 
     public int calculateEnergy(String seed) {
         int lineCount = Math.max(1, seed.split("\\R").length); // Split by any linebreaks
-        return Math.max(10, lineCount * 6);
+        return Math.max(10, lineCount * 3);
     }
 }
